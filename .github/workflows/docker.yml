@@ -1,54 +1,51 @@
-name: Build Docker Image
+name: CI to Docker Hub
 
 on:
-  workflow_dispatch:
   push:
-    # 每次 push tag 时进行构建，不需要每次 push 都构建。使用通配符匹配每次 tag 的提交，记得 tag 名一定要以 v 开头
     tags:
-      - v*
+      - v*.*.*
 
 env:
-  # 设置 docker 镜像名
   IMAGE_NAME: baiduwp-php
 
 jobs:
-  # Push image to GitHub Packages.
-  # See also https://docs.docker.com/docker-hub/builds/
-  push:
+
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-        # 构建镜像，指定镜像名
-      - name: Build image
-        run: docker build . --file Dockerfile --tag $IMAGE_NAME
-        # 登录到 dockerhub，使用 GitHub secrets 传入账号密码，密码被加密存储在 GitHub 服务器
-      - name: Log into registry
-        run: echo "${{ secrets.DOCKER_ACCESS_TOKEN }}" | docker login -u yuantuo666 --password-stdin
+      - name: Checkout
+        uses: actions/checkout@v2.3.5
 
-      - name: Push image
-        run: |
-          # 拼接镜像 id，这个镜像 id 就是在使用 docker 镜像时 pull 后面的名字。
-          IMAGE_ID=yuantuo666/$IMAGE_NAME
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v1
 
-          # 将所有的大写字母转为小写
-          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
 
-          # 从 GitHub.ref 中取出版本
-          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+      - name: Login to Docker Hub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-          # 从 tag 名字中替换 v 字符
-          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v2
+        with:
+          context: ./
+          file: ./Dockerfile
+          builder: ${{ steps.buildx.outputs.name }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/$IMAGE_NAME:latest,${{ secrets.DOCKER_HUB_USERNAME }}/$IMAGE_NAME:${{ github.ref_name }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
 
-          # Use Docker `latest` tag convention
-          [ "$VERSION" == "master" ] && VERSION=latest
-
-          echo IMAGE_ID=$IMAGE_ID
-          echo VERSION=$VERSION
-          # 设置镜像 id 和版本号
-          docker tag $IMAGE_NAME $IMAGE_ID:$VERSION
-          # 进行 push
-          docker push $IMAGE_ID:$VERSION
-          # push 到 latest
-          [ "$VERSION" != "latest" ] && docker tag $IMAGE_NAME $IMAGE_ID:latest
-          [ "$VERSION" != "latest" ] && docker push $IMAGE_ID:latest
-          
+      - name: Image digest
+        run: echo ${{ steps.docker_build.outputs.digest }}
